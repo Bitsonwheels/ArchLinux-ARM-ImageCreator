@@ -1,8 +1,9 @@
 #!/bin/bash
 
 set -uo pipefail
-
+echo -e "\e[0;32m"==> Installing Kernel and div. Tools"
 # Replace default kernel + U-Boot with Raspberry Pi foundation's kernel + bootloader
 # See https://github.com/fwcd/archlinuxarm-images/issues/3
-pacman -R --noconfirm linux-armv7 uboot-raspberrypi
+pacman -R --noconfirm linux-armv7 linux-armv7-headers uboot-raspberrypi
 pacman -Syu --noconfirm --needed linux-rpi raspberrypi-bootloader raspberrypi-utils
+pacman -R --noconfirm vim git sudo go python mc gcc
