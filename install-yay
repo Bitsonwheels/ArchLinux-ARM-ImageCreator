@@ -1,0 +1,15 @@
+#!/usr/bin/bash
+
+echo "==> Setting up yay ..."
+
+URL="https://aur.archlinux.org/yay.git"
+STAGING_PATH="${mount}/yay"
+
+# --- Install & Clone the needful
+sudo pacman -S --needed git base-devel || oof
+git clone "$URL" "$STAGING_PATH" || oof
+
+# --- Change into dir and build
+cd "$STAGING_PATH" || oof
+makepkg -si || oof
+

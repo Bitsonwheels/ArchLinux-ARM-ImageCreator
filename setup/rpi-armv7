@@ -1,9 +1,21 @@
 #!/bin/bash
 
 set -uo pipefail
-echo -e "\e[0;32m"==> Installing Kernel and div. Tools"
+echo -e "\e[0;32m""==> Installing Kernel and div. Tools"
 # Replace default kernel + U-Boot with Raspberry Pi foundation's kernel + bootloader
 # See https://github.com/fwcd/archlinuxarm-images/issues/3
-pacman -R --noconfirm linux-armv7 linux-armv7-headers uboot-raspberrypi
-pacman -Syu --noconfirm --needed linux-rpi raspberrypi-bootloader raspberrypi-utils
-pacman -R --noconfirm vim git sudo go python mc gcc
+pacman -R --noconfirm linux-rpi linux-rpi-headers uboot-raspberrypi
+pacman -Syu --noconfirm --needed linux-rpi raspberrypi-bootloader raspberrypi-utils firmware-raspberrypi raspberrypi-devicetree-git python-ble-serial lsb-release dpkg vim git sudo go python mc gcc f2fs-tools make cmake
+
+echo -e "\e[0;32m""==> Installing YAY"
+
+URL="https://aur.archlinux.org/yay.git"
+STAGING_PATH="./yay"
+
+# --- Install & Clone the needful
+sudo pacman -S --needed --noconfirm git base-devel make gcc cmake || oof
+sudo -u alarm git clone "$URL" "$STAGING_PATH"
+
+# --- Change into dir and build
+cd "$STAGING_PATH"
+sudo -u alarm makepkg -si --noconfirm

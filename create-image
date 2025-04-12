@@ -1,5 +1,5 @@
 #!/bin/bash
-
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 # Creates an Arch Linux ARM image e.g. for installation to an SD card
 # Adapted from https://github.com/andrewboring/alarm-images/blob/master/scripts/create-image
 
@@ -7,6 +7,11 @@
 set -uo pipefail
 trap 's=$?; echo "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 IFS=$'\n\t'
+
+echo "▄▖____▌_▖_▘________▄▖▄▖▖__▖__▄▖___________▄▖______▗_____";
+echo "▌▌▛▘▛▘▛▌▌_▌▛▌▌▌▚▘▄▖▌▌▙▘▛▖▞▌__▐_▛▛▌▀▌▛▌█▌__▌_▛▘█▌▀▌▜▘▛▌▛▘";
+echo "▛▌▌_▙▖▌▌▙▖▌▌▌▙▌▞▖__▛▌▌▌▌▝_▌__▟▖▌▌▌█▌▙▌▙▖__▙▖▌_▙▖█▌▐▖▙▌▌_";
+echo "____________________________________▄▌__________________";
 
 # Ensure we are root
 if [[ $EUID -ne 0 ]]; then
@@ -43,6 +48,7 @@ mirrorscript="fastestmirror.sh"
 # Local setup script to run inside the image
 script_sources=("$@")
 script_destdir="/setup-scripts"
+script_destdir2="/etc/init.d"
 loopdev=
 
 # Tasks to run when the shell exits for any reason, unmount the image and
@@ -73,11 +79,14 @@ parted --script "${loopdev}" mkpart primary f2fs 200M 100%
 echo "==> Formatting image..."
 bootdev=$(ls "${loopdev}"*1)
 rootdev=$(ls "${loopdev}"*2)
-#mkfs.vfat -F32 ${bootdev}
-#mkfs.f2fs -F ${rootdev}
 
+# Format with f2fs
+#mkfs.vfat -I -n SYSTEM ${bootdev}
+#mkfs.f2fs -f -l root ${rootdev}
+
+# Format with ext4
 mkfs.vfat -I -n SYSTEM ${bootdev}
-mkfs.f2fs -f -l root ${rootdev}
+mkfs.ext4 -F -L root -b 4096 -E stride=4,stripe_width=1024 ${rootdev}
 
 echo "==> Mounting image..."
 [ ! -d "${mount}" ] && mkdir "${mount}"
@@ -85,7 +94,7 @@ mount "${rootdev}" "${mount}"
 [ ! -d "${mount}/boot" ] && mkdir "${mount}/boot"
 mount "${bootdev}" "${mount}/boot"
 
-echo "==> Installing Arch Linux ARM root tree to image..."
+  echo "==> Installing Arch Linux ARM root tree to image..."
 tar -xpf "${file}" -C "${mount}" 2> >(grep -v "Ignoring unknown extended header keyword")
 
 echo "==> Installing overlay tree to image..."
@@ -109,9 +118,15 @@ mkdir "${mount}${script_destdir}"
   echo "==> Running $script_dest..."
   arch-chroot "${mount}" "${script_dest}"
 
-echo "==> Setting up f2fs Tools..."
+echo "==> Updating the EEPROM..."
 cat <<EOF | arch-chroot "${mount}"
-pacman -Syu --noconfirm --needed f2fs-tools
+#pacman -Syu --noconfirm vim git sudo dpkg go python mc gcc f2fs-tools lsb-release
+rpi-eeprom-update -a
+EOF
+
+echo "==> Setting up Tools..."
+cat <<EOF | arch-chroot "${mount}"
+pacman -Syu --noconfirm vim git sudo dpkg go python mc gcc f2fs-tools lsb-release
 EOF
 
 echo "==> Setting up systemd service for expanding fs on first boot..."
@@ -125,15 +140,25 @@ for script in "${script_sources[@]}"; do
 
   echo "==> Installing $script to $script_dest in new root..."
   install -Dm755 "$script" "${mount}${script_dest}"
-
+  echo "==> Installing resize2fs to $script_destdir2 in new root..."
+  install -Dm755 "resize2fs_once" "${mount}${script_destdir2}"
   echo "==> Running $script_dest..."
   arch-chroot "${mount}" "${script_dest}"
 
   echo "==> Removing $script_dest from new root..."
   rm "${mount}${script_dest}"
+
 done
+
+
+echo "▄▖____________________________▗____▌________________▐▘__▜_▜_____";
+echo "▐_▛▛▌▀▌▛▌█▌__▌▌▌▀▌▛▘__▛▘▛▘█▌▀▌▜▘█▌▛▌__▛▘▌▌▛▘▛▘█▌▛▘▛▘▜▘▌▌▐_▐_▌▌__";
+echo "▟▖▌▌▌█▌▙▌▙▖__▚▚▘█▌▄▌__▙▖▌_▙▖█▌▐▖▙▖▙▌__▄▌▙▌▙▖▙▖▙▖▄▌▄▌▐_▙▌▐▖▐▖▙▌▗_";
+echo "_______▄▌___________________________________________________▄▌__";
+            
 
 echo "==> Cleaning pacman cache..."
 cat <<EOF | arch-chroot "${mount}"
 yes | pacman -Scc
+
 EOF

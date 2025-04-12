@@ -1,0 +1,13 @@
+#!/usr/bin/bash
+
+echo -e "\e[0;32m""==> Installing YAY"
+
+URL="https://aur.archlinux.org/yay.git"
+STAGING_PATH="./yay"
+
+# --- Install & Clone the needful
+sudo pacman -S --needed --noconfirm git base-devel make gcc cmake
+sudo -u alarm git clone "$URL" "$STAGING_PATH"
+# --- Change into dir and build
+cd "$STAGING_PATH"
+sudo -u alarm makepkg -si --noconfirm
