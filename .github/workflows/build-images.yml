@@ -55,7 +55,7 @@ jobs:
     - name: Compress image
       run: zip -v "${{ steps.rename-image.outputs.image_name }}"{.zip,}
     - name: Upload image
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: "${{ steps.rename-image.outputs.image_name }}.zip"
         path: "${{ steps.rename-image.outputs.image_name }}.zip"
