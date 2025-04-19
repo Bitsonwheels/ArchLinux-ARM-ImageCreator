@@ -1,13 +1,35 @@
 #!/usr/bin/bash
 
-echo -e "\e[0;32m""==> Installing YAY"
+CFG_FILE=config.conf
+CFG_CONTENT=$(cat $CFG_FILE | sed -r '/[^=]+=[^=]+/!d' | sed -r 's/\s+=\s/=/g')
+eval "$CFG_CONTENT"
 
-URL="https://aur.archlinux.org/yay.git"
-STAGING_PATH="./yay"
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+export LANG=LANG en_US.UTF-8
+export LC_CTYPE=en_US.UTF-8
 
-# --- Install & Clone the needful
-sudo pacman -S --needed --noconfirm git base-devel make gcc cmake
-sudo -u alarm git clone "$URL" "$STAGING_PATH"
-# --- Change into dir and build
-cd "$STAGING_PATH"
-sudo -u alarm makepkg -si --noconfirm
+# set text color constants 
+RED="\e[31m"
+GREEN="\e[32m"
+YELLOW="\e[33m"
+MAGENTA="\e[35m"
+BOLDGREEN="\e[1;${GREEN}m"
+BOLDRED="\e[1;${RED}m"
+REDBACKGROUND="\e[41m"
+GREENBACKGROUND="\e[42m"
+YELLOWBACKGROUND="\e[43m"
+ENDCOLOR="\e[0m"
+
+set -uo pipefail
+
+URL="https://github.com/Jguer/yay.git"
+STAGING_PATH="yay"
+locales="en_US.UTF-8"
+mount="mnt"
+
+echo -e "${RED}==> Installing YAY... ${ENDCOLOR}"
+echo -e "${YELLOWBACKGROUND}==> Please wait. It will take a while... ${ENDCOLOR}"
+
+git clone "$URL" "$STAGING_PATH"
+cd "$STAGING_PATH" && make install
+

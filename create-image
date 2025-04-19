@@ -1,7 +1,24 @@
-#!/bin/bash
+#!/usr/bin/bash
+
+CFG_FILE=config.conf
+CFG_CONTENT=$(cat $CFG_FILE | sed -r '/[^=]+=[^=]+/!d' | sed -r 's/\s+=\s/=/g')
+eval "$CFG_CONTENT"
+
 export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
-# Creates an Arch Linux ARM image e.g. for installation to an SD card
-# Adapted from https://github.com/andrewboring/alarm-images/blob/master/scripts/create-image
+export LANG=en_US.UTF-8
+export LC_CTYPE=en_US.UTF-8
+
+# set text color constants 
+RED="\e[31m"
+GREEN="\e[32m"
+YELLOW="\e[33m"
+MAGENTA="\e[35m"
+BOLDGREEN="\e[1;${GREEN}m"
+BOLDRED="\e[1;${RED}m"
+REDBACKGROUND="\e[41m"
+GREENBACKGROUND="\e[42m"
+YELLOWBACKGROUND="\e[43m"
+ENDCOLOR="\e[0m"
 
 # Set up script error handling see https://disconnected.systems/blog/another-bash-strict-mode for details
 set -uo pipefail
@@ -13,9 +30,11 @@ echo "▌▌▛▘▛▘▛▌▌_▌▛▌▌▌▚▘▄▖▌▌▙▘▛▖�
 echo "▛▌▌_▙▖▌▌▙▖▌▌▌▙▌▞▖__▛▌▌▌▌▝_▌__▟▖▌▌▌█▌▙▌▙▖__▙▖▌_▙▖█▌▐▖▙▌▌_";
 echo "____________________________________▄▌__________________";
 
+echo -e "${REDBACKGROUND} ==> Creates an Arch Linux ARM image e.g. for installation to an SD card. ${ENDCOLOR}"
+
 # Ensure we are root
 if [[ $EUID -ne 0 ]]; then
-  echo "This script must be run as root" 1>&2
+  echo -e "${RED} This script must be run as root! ${ENDCOLOR}"
   exit 1
 fi
 
@@ -44,6 +63,9 @@ shift
 file="ArchLinuxARM-${arch}-latest.tar.gz"
 image="archlinux-${arch}.img"
 mirrorscript="fastestmirror.sh"
+URL="https://aur.archlinux.org/yay-bin.git"
+STAGING_PATH="/usr/src/yay-bin"
+locales="en_US.UTF-8"
 
 # Local setup script to run inside the image
 script_sources=("$@")
@@ -53,6 +75,7 @@ loopdev=
 
 # Tasks to run when the shell exits for any reason, unmount the image and
 # general cleanup
+echo -e "\e[1;33m ==> Tasks to run when the shell exits for any reason, unmount the image and general cleanup... \e[0m"
 cleanup() {
   rm -rf "${mount}${script_destdir}"
   if [[ -d "${mount}" ]]; then
@@ -63,20 +86,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> Downloading Arch Linux ARM tarball (${file})..."
+echo -e "\e[1;96m ==> Downloading Arch Linux ARM tarball (${file})... \e[0m"
 #[ ! -f "${file}" ] && wget --quiet "${base_url}/${file}"
 [ ! -f "${file}" ] && curl -LO "${base_url}/${file}"
 
-echo "==> Creating image..."
+echo -e "\e[1;96m ==> Creating image... \e[0m"
 dd if=/dev/zero of="${image}" bs=1 seek="${size}" count=0
 loopdev=$(losetup --find --show "${image}")
 
-echo "==> Partitioning image..."
+echo -e "\e[1;33m ==> Partitioning image... \e[0m"
 parted --script "${loopdev}" mklabel msdos
 parted --script "${loopdev}" mkpart primary fat32 0% 200M
-parted --script "${loopdev}" mkpart primary f2fs 200M 100%
+parted --script "${loopdev}" mkpart primary ext4 200M 100%
 
-echo "==> Formatting image..."
+echo -e "\e[1;33m ==> Formatting image...  \e[0m"
 bootdev=$(ls "${loopdev}"*1)
 rootdev=$(ls "${loopdev}"*2)
 
@@ -88,51 +111,66 @@ rootdev=$(ls "${loopdev}"*2)
 mkfs.vfat -I -n SYSTEM ${bootdev}
 mkfs.ext4 -F -L root -b 4096 -E stride=4,stripe_width=1024 ${rootdev}
 
-echo "==> Mounting image..."
+echo -e "\e[1;33m ==> Mounting image...  \e[0m"
 [ ! -d "${mount}" ] && mkdir "${mount}"
 mount "${rootdev}" "${mount}"
 [ ! -d "${mount}/boot" ] && mkdir "${mount}/boot"
 mount "${bootdev}" "${mount}/boot"
 
-  echo "==> Installing Arch Linux ARM root tree to image..."
+echo -e "\e[1;96m ==> Installing Arch Linux ARM root tree to image...  \e[0m"
 tar -xpf "${file}" -C "${mount}" 2> >(grep -v "Ignoring unknown extended header keyword")
 
-echo "==> Installing overlay tree to image..."
+echo -e "\e[1;96m ==> Installing overlay tree to image...  \e[0m"
 rsync -rlDvP "$(dirname $0)/overlay/" "${mount}/"
 
-echo "==> Setting up pacman keyring..."
+echo -e "\e[1;96m ==> Setting up pacman keyring...  \e[0m"
+
 cat <<EOF | arch-chroot "${mount}"
-pacman-key --init
-pacman-key --populate archlinuxarm
+  pacman-key --init
+  pacman-key --populate archlinuxarm
 EOF
 
-echo "==> Setting up setup scripts dir..."
+echo -e "\e[1;96m==> Setting up setup scripts dir...  \e[0m"
 mkdir "${mount}${script_destdir}"
 
-# Run mirrorscript scripts inside new root
+echo -e "\e[1;93m==> Run mirrorscript scripts inside new root...  \e[0m"
   script_dest="${script_destdir}/$(basename "$mirrorscript")"
   
-  echo "==> Installing $mirrorscript to $script_dest in new root..."
+echo -e "\e[1;96m==> Installing $mirrorscript to $script_dest in new root...  \e[0m"
   install -Dm755 "$mirrorscript" "${mount}${script_dest}"
   
-  echo "==> Running $script_dest..."
-  arch-chroot "${mount}" "${script_dest}"
+echo -e "\e[1;93m==> Running $script_dest...  \e[0m"
+  sudo arch-chroot "${mount}" "${script_dest}"
 
-echo "==> Updating the EEPROM..."
-cat <<EOF | arch-chroot "${mount}"
-#pacman -Syu --noconfirm vim git sudo dpkg go python mc gcc f2fs-tools lsb-release
-rpi-eeprom-update -a
+echo -e "\e[1;96m==> Setting up Tools and needed Apps...  \e[0m"
+echo -e "\e[1;46m==> Coffee break!? That might take a while.  \e[0m"
+
+cat <<EOF | arch-chroot "${mount}" 
+  pacman -Syu --noconfirm --needed vim git sudo dpkg go python base-devel devtools unzip wget mc gcc cmake f2fs-tools lsb-release fakeroot python-setuptools python-pip python-pipx tk arch-install-scripts
 EOF
 
-echo "==> Setting up Tools..."
-cat <<EOF | arch-chroot "${mount}"
-pacman -Syu --noconfirm vim git sudo dpkg go python mc gcc f2fs-tools lsb-release
-EOF
+echo -e "\e[0;96m" "==> Configure system locale to en_US.UTF-8...  \e[0m"
 
-echo "==> Setting up systemd service for expanding fs on first boot..."
-cat <<EOF | arch-chroot "${mount}"
-systemctl enable expand-rootfs
+# Configure system locale to en_US.UTF-8
+  arch-chroot "${mount}" sed -i 's/#\(en_US.UTF-8 UTF-8\)/\1/g' /etc/locale.gen
+  arch-chroot "${mount}" locale-gen
+  arch-chroot "${mount}" echo 'LANG=en_US.UTF-8' > /etc/locale.conf
+  arch-chroot "${mount}" echo 'LANG="en_US.UTF-8"' > /etc/environment
+  arch-chroot "${mount}" echo 'LC_ALL=“en_US.UTF-8”' > /etc/environment
+  
+echo -e "\e[0;44m" "==> Setting up service for expanding fs on first boot...  \e[0m"
+  cat <<EOF | arch-chroot "${mount}"
+  systemctl enable expand-rootfs
 EOF
+  
+echo -e "\e[0;44m" "==> Setting up the alarm user...  \e[0m"
+  groupadd -g 999 sudo && useradd -u 999 -g alarm -G sudo -m -s /bin/bash alarm && \
+  sed -i /etc/sudoers -re 's/^%sudo.*/%sudo ALL=(ALL:ALL) NOPASSWD: ALL/g' && \
+  sed -i /etc/sudoers -re 's/^root.*/root ALL=(ALL:ALL) NOPASSWD: ALL/g' && \
+  sed -i /etc/sudoers -re 's/^#includedir.*/## **Removed the include directive** ##"/g' && \
+  echo "alarm ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
+  echo "Customized the sudoers file for passwordless access to the alarm user!" && \
+  echo "alarm user:";  su - alarm -c id
 
 # Run setup scripts inside new root
 for script in "${script_sources[@]}"; do
@@ -144,21 +182,18 @@ for script in "${script_sources[@]}"; do
   install -Dm755 "resize2fs_once" "${mount}${script_destdir2}"
   echo "==> Running $script_dest..."
   arch-chroot "${mount}" "${script_dest}"
-
   echo "==> Removing $script_dest from new root..."
   rm "${mount}${script_dest}"
 
 done
-
-
-echo "▄▖____________________________▗____▌________________▐▘__▜_▜_____";
-echo "▐_▛▛▌▀▌▛▌█▌__▌▌▌▀▌▛▘__▛▘▛▘█▌▀▌▜▘█▌▛▌__▛▘▌▌▛▘▛▘█▌▛▘▛▘▜▘▌▌▐_▐_▌▌__";
-echo "▟▖▌▌▌█▌▙▌▙▖__▚▚▘█▌▄▌__▙▖▌_▙▖█▌▐▖▙▖▙▌__▄▌▙▌▙▖▙▖▙▖▄▌▄▌▐_▙▌▐▖▐▖▙▌▗_";
-echo "_______▄▌___________________________________________________▄▌__";
-            
 
 echo "==> Cleaning pacman cache..."
 cat <<EOF | arch-chroot "${mount}"
 yes | pacman -Scc
 
 EOF
+
+echo "▄▖____________________________▗____▌________________▐▘__▜_▜_____";
+echo "▐_▛▛▌▀▌▛▌█▌__▌▌▌▀▌▛▘__▛▘▛▘█▌▀▌▜▘█▌▛▌__▛▘▌▌▛▘▛▘█▌▛▘▛▘▜▘▌▌▐_▐_▌▌__";
+echo "▟▖▌▌▌█▌▙▌▙▖__▚▚▘█▌▄▌__▙▖▌_▙▖█▌▐▖▙▖▙▌__▄▌▙▌▙▖▙▖▙▖▄▌▄▌▐_▙▌▐▖▐▖▙▌▗_";
+echo "_______▄▌___________________________________________________▄▌__";
