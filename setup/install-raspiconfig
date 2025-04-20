@@ -1,0 +1,30 @@
+#!/usr/bin/bash
+
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+export LANG=LANG en_US.UTF-8
+export LC_CTYPE=en_US.UTF-8
+
+# set text color constants
+RED="\e[91m"
+GREEN="\e[32m"
+YELLOW="\e[33m"
+MAGENTA="\e[35m"
+BOLDYELLOW="\e[1;${YELLOW}"
+BOLDGREEN="\e[1;${GREEN}"
+BOLDRED="\e[1;${RED}"
+REDBACKGROUND="\e[41m"
+GREENBACKGROUND="\e[42m"
+YELLOWBACKGROUND="\e[43m"
+ENDCOLOR="\e[0m"
+
+set -uo pipefail
+
+URL="https://raw.githubusercontent.com/RPi-Distro/raspi-config/refs/heads/bookworm/raspi-config"
+USRBIN_PATH="/usr/bin/"
+
+echo -e "${RED}==> Installing RASPI-CONFIG. Configuration tool for the Raspberry Pi...  ${ENDCOLOR}"
+echo -e "${YELLOWBACKGROUND}==> Please wait. It will take a while... ${ENDCOLOR}"
+
+[ ! -f "${URL}" ] && curl -LO --output-dir "${USRBIN_PATH}" "${URL}"
+chmod +x "${USRBIN_PATH}"/raspi-config
+echo -e "${GREEN}==> RASPI-CONFIG installed... ${ENDCOLOR}"
