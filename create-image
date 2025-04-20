@@ -60,8 +60,6 @@ shift
 file="ArchLinuxARM-${arch}-latest.tar.gz"
 image="archlinux-${arch}.img"
 mirrorscript="fastestmirror.sh"
-URL="https://aur.archlinux.org/yay-bin.git"
-STAGING_PATH="/usr/src/yay-bin"
 locales="en_US.UTF-8"
 
 # Local setup script to run inside the image
