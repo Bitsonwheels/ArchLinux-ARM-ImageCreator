@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/bash
 
 export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 export LANG=en_US.UTF-8
