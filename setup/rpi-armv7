@@ -1,24 +1,13 @@
 #!/usr/bin/bash
+
+set -uo pipefail
+
 export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 export LANG=LANG en_US.UTF-8
 export LC_CTYPE=en_US.UTF-8
 
-arch="armv7h"
-mount="mnt"
-yay_dir="/usr/sbin"
-yay_url="https://github.com/Jguer/yay/releases/download/v12.4.2"
-yay="yay_12.4.2_${arch}.tar.gz"
-
-
-set -uo pipefail
 echo -e "\e[0;32m""==> Installing Kernel and div. Tools"
 # Replace default kernel + U-Boot with Raspberry Pi foundation's kernel + bootloader
 # See https://github.com/fwcd/archlinuxarm-images/issues/3
 pacman -R --noconfirm linux-rpi linux-rpi-headers uboot-raspberrypi
 pacman -Syu --noconfirm --needed linux-rpi raspberrypi-bootloader raspberrypi-utils firmware-raspberrypi raspberrypi-devicetree-git python-ble-serial lsb-release vim dpkg git sudo go python mc gcc f2fs-tools make cmake zsh-completion
-
-echo -e "\e[1;96m ==> Downloading Arch Linux ARM tarball (${yay})... \e[0m"
-[ ! -f "${yay}" ] && curl -LO "${yay_url}/${yay}"
-tar xvzf "${yay}" yay/
-echo "==> Installing YAY to $yay_dir in new root..."
-install -Dm755 ./yay/yay "${mount}${yay_dir}"

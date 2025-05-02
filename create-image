@@ -141,7 +141,7 @@ echo -e "${BOLDRED}==> Setting up Tools and needed Apps...  ${ENDCOLOR}"
 echo -e "${YELLOWBACKGROUND} ==> Coffee break!? That might take a while.  ${ENDCOLOR}"
 
 cat <<EOF | arch-chroot "${mount}" 
-  pacman -Syu --noconfirm --needed vim git sudo dpkg go python base-devel devtools unzip wget mc gcc cmake f2fs-tools lsb-release fakeroot python-setuptools python-pip python-pipx tk arch-install-scripts
+  pacman -Syu --noconfirm --needed vim arch-install-scripts git sudo dpkg go python base-devel devtools unzip wget mc gcc cmake f2fs-tools lsb-release fakeroot python-setuptools python-pip python-pipx tk arch-install-scripts
 EOF
 
 echo -e "${YELLOWBACKGROUND}==> Configure system locale to en_US.UTF-8...  ${ENDCOLOR}"
@@ -164,8 +164,7 @@ echo -e "${BOLDRED}==> Setting up the alarm user...  ${ENDCOLOR}"
   sed -i /etc/sudoers -re 's/^root.*/root ALL=(ALL:ALL) NOPASSWD: ALL/g' && \
   sed -i /etc/sudoers -re 's/^#includedir.*/## **Removed the include directive** ##"/g' && \
   echo "alarm ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
-  echo "Customized the sudoers file for passwordless access to the alarm user!" && \
-  echo "alarm user:";  su - alarm -c id
+echo -e "${BOLDRED}==> Customized the sudoers file for passwordless access to the alarm user! ${ENDCOLOR}"
 
 # Run setup scripts inside new root
 for script in "${script_sources[@]}"; do
@@ -179,7 +178,6 @@ echo -e "${BOLDRED}==> Running $script_dest...${ENDCOLOR}"
   arch-chroot "${mount}" "${script_dest}"
 echo -e "${BOLDRED}==> Removing $script_dest from new root... ${ENDCOLOR}"
   rm "${mount}${script_dest}"
-
 done
 
 echo -e "${BOLDRED}==> Cleaning pacman cache...${ENDCOLOR}"
