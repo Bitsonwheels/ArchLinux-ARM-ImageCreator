@@ -6,3 +6,20 @@
   fail_on_prepare_env_warning: true
   resources: NANO
   arch: ARM64
+  actions:
+  - action: WORKDIR /source
+    type: BUILD
+    docker_image_name: buddy/localshell
+    docker_image_tag: ubuntu_24.04
+    execute_commands:
+    - FROM hoverbear/archlinux
+    - "# It's always a good idea to update Arch, then install deps."
+    - RUN pacman -Syu
+    - RUN pacman -S git file awk gcc --noconfirm
+    - ""
+    - "# /source - Should mount the user code."
+    - "VOLUME [ \"/source\" ]"
+    - ""
+    - "# Change the Workdir to /source"
+    - WORKDIR /source
+    shell: BASH
