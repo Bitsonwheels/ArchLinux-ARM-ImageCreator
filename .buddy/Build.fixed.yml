@@ -9,8 +9,8 @@
   actions:
   - action: WORKDIR /source
     type: BUILD
-    docker_image_name: buddy/localshell
-    docker_image_tag: ubuntu_24.04
+    docker_image_name: hoverbear/archlinux
+    docker_image_tag: latest
     execute_commands:
     - FROM hoverbear/archlinux
     - "# It's always a good idea to update Arch, then install deps."
