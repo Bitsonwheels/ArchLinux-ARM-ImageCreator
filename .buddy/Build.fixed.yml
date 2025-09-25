@@ -9,7 +9,7 @@
   actions:
   - action: WORKDIR /source
     type: BUILD
-    docker_image_name: hoverbear/archlinux
+    docker_image_name: archlinux/archlinux
     docker_image_tag: latest
     execute_commands:
     - ""
