@@ -22,4 +22,7 @@
     - ""
     - "# Change the Workdir to /source"
     - WORKDIR /source
+    setup_commands:
+    - RUN pacman -Syu
+    - RUN pacman -S git file awk gcc --noconfirm
     shell: BASH
