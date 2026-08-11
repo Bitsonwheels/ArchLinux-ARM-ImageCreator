@@ -22,6 +22,45 @@ set -uo pipefail
 trap 's=$?; echo "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 IFS=$'\n\t'
 
+# --- Host OS detection -----------------------------------------------------
+# The full build needs Linux facilities: loop devices (losetup), ext4 mounts
+# and running ARM/Linux binaries via arch-chroot. macOS provides none of
+# these, so we detect the host and either use the native tools (Linux) or a
+# partial path that stops before the mount/chroot steps with clear guidance
+# (macOS -> use ./create-image-docker.sh for a complete build).
+case "$(uname -s)" in
+  Linux)  host_os="linux" ;;
+  Darwin) host_os="darwin" ;;
+  *)
+    echo -e "${RED}Unsupported host OS: $(uname -s)${ENDCOLOR}" >&2
+    exit 1
+    ;;
+esac
+
+# Homebrew tools on macOS install into sbin directories and kegs that are not
+# on the default PATH (parted -> sbin, e2fsprogs is keg-only).
+if [[ "${host_os}" == "darwin" ]]; then
+  export PATH="/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin:/opt/homebrew/sbin:/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
+fi
+
+# On macOS check the Homebrew toolchain early and fail with clear guidance.
+if [[ "${host_os}" == "darwin" ]]; then
+  missing=()
+  for tool in parted mkfs.vfat mkfs.ext4; do
+    command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
+  done
+  if (( ${#missing[@]} )); then
+    echo -e "${RED}==> Missing tool(s) on macOS: ${missing[*]}${ENDCOLOR}"
+    echo -e "${YELLOW}    Install the native toolchain with:${ENDCOLOR}"
+    echo -e "${GREEN}      brew install parted dosfstools e2fsprogs${ENDCOLOR}"
+    echo -e "${YELLOW}    Note: on macOS this script can only create, partition and${ENDCOLOR}"
+    echo -e "${YELLOW}    format the image. Mounting ext4 and running the ARM/Linux${ENDCOLOR}"
+    echo -e "${YELLOW}    chroot steps is not possible on macOS - use ./create-image-docker.sh${ENDCOLOR}"
+    echo -e "${YELLOW}    for a complete build.${ENDCOLOR}"
+    exit 1
+  fi
+fi
+
 echo -e "${REDBACKGROUND}▄▖____▌_▖_▘________▄▖▄▖▖__▖__▄▖___________▄▖______▗_____${ENDCOLOR}"
 echo -e "${REDBACKGROUND}▌▌▛▘▛▘▛▌▌_▌▛▌▌▌▚▘▄▖▌▌▙▘▛▖▞▌__▐_▛▛▌▀▌▛▌█▌__▌_▛▘█▌▀▌▜▘▛▌▛▘${ENDCOLOR}"
 echo -e "${REDBACKGROUND}▛▌▌_▙▖▌▌▙▖▌▌▌▙▌▞▖__▛▌▌▌▌▝_▌__▟▖▌▌▌█▌▙▌▙▖__▙▖▌_▙▖█▌▐▖▙▌▌_${ENDCOLOR}"
@@ -67,6 +106,32 @@ script_sources=("$@")
 script_destdir="/setup-scripts"
 script_destdir2="/etc/init.d"
 loopdev=
+kpartx_used=0
+
+# Attach/detach an image file as a block device.
+#   Linux: loop devices via losetup
+#   macOS: hdiutil creates /dev/disk* nodes, which play the same role
+attach_loop() {
+  case "${host_os}" in
+    linux)
+      losetup --find --show "$1"
+      ;;
+    darwin)
+      hdiutil attach -nomount "$1" | awk '{ print $1 }'
+      ;;
+  esac
+}
+
+detach_loop() {
+  case "${host_os}" in
+    linux)
+      losetup --detach "$1"
+      ;;
+    darwin)
+      hdiutil detach "$1"
+      ;;
+  esac
+}
 
 # Tasks to run when the shell exits for any reason, unmount the image and
 # general cleanup
@@ -77,26 +142,86 @@ cleanup() {
     umount -R "${mount}" || true
     rmdir "${mount}" || true
   fi
-  [ -n "${loopdev}" ] && losetup --detach "${loopdev}" || true
+  [ -n "${loopdev}" ] && detach_loop "${loopdev}" || true
+  if [[ "${kpartx_used}" == "1" ]]; then
+    kpartx -d "${loopdev}" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
 echo -e "${YELLOW}==> Downloading Arch Linux ARM tarball (${file})...${ENDCOLOR}"
-#[ ! -f "${file}" ] && wget --quiet "${base_url}/${file}"
-[ ! -f "${file}" ] && curl -LO "${base_url}/${file}"
+# Download with resume support (equivalent of `wget -c`):
+#   - if the file is missing or incomplete, fetch it with `curl -C -`,
+#     which resumes a partial download instead of restarting
+download_tarball() {
+  local remote_size local_size
+  remote_size="$(curl -fsI "${base_url}/${file}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r",""); print $2}')"
+  local_size="$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null)"
+  if [[ -z "${local_size}" || "${local_size}" == "0" ]]; then
+    curl -C - -LO "${base_url}/${file}"
+  elif [[ -n "${remote_size}" && "${remote_size}" != "${local_size}" ]]; then
+    echo -e "${YELLOW}    Incomplete download detected (${local_size}/${remote_size} bytes), resuming...${ENDCOLOR}"
+    curl -C - -LO "${base_url}/${file}"
+  fi
+}
+download_tarball
 
   echo -e "${BOLDRED}==> Creating image...${ENDCOLOR}"
 dd if=/dev/zero of="${image}" bs=1 seek="${size}" count=0
-loopdev=$(losetup --find --show "${image}")
+loopdev=$(attach_loop "${image}")
 
 echo -e "${YELLOW}==> Partitioning image...${ENDCOLOR}"
 parted --script "${loopdev}" mklabel msdos
 parted --script "${loopdev}" mkpart primary fat32 0% 200M
 parted --script "${loopdev}" mkpart primary ext4 200M 100%
 
+# Inside containers (e.g. via create-image-docker.sh) there is no udev
+# daemon, so the partition device nodes /dev/loop0p1, /dev/loop0p2 are not
+# created automatically. partx makes the kernel rescan the loop device.
+# No-op / harmless on hosts with udev where the nodes already exist.
+if command -v partx >/dev/null 2>&1; then
+  partx -a "${loopdev}" >/dev/null 2>&1 || true
+fi
+
 echo -e "${YELLOW}==> Formatting image...${ENDCOLOR}"
-bootdev=$(ls "${loopdev}"*1)
-rootdev=$(ls "${loopdev}"*2)
+# Resolve the partition device nodes. Naming differs by platform and setup:
+#   Linux + udev:        /dev/loop0p1
+#   Linux (older):       /dev/loop01
+#   macOS hdiutil:       /dev/disk2s1
+#   Containers (kpartx): /dev/mapper/loop0p1  (created below when needed)
+resolve_partition() {
+  local loopdev="$1" part="$2" candidate
+  for suffix in "p${part}" "${part}" "s${part}"; do
+    candidate="${loopdev}${suffix}"
+    if [ -b "${candidate}" ]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+bootdev="$(resolve_partition "${loopdev}" 1 || true)"
+rootdev="$(resolve_partition "${loopdev}" 2 || true)"
+
+# Inside containers (e.g. via create-image-docker.sh) there is no udev
+# daemon and loop devices often have no partition support enabled, so the
+# /dev/loop0p* nodes never appear. kpartx creates device-mapper mappings
+# (/dev/mapper/loop0p1, ...) which work regardless. No-op on hosts where
+# the nodes already exist.
+if [[ -z "${bootdev}" ]] && command -v kpartx >/dev/null 2>&1; then
+  echo -e "${YELLOW}    No partition nodes for ${loopdev} - creating device-mapper mappings via kpartx...${ENDCOLOR}"
+  kpartx -a "${loopdev}"
+  kpartx_used=1
+  bootdev="/dev/mapper/$(basename "${loopdev}")p1"
+  rootdev="/dev/mapper/$(basename "${loopdev}")p2"
+fi
+
+if [[ -z "${bootdev}" || -z "${rootdev}" ]]; then
+  echo -e "${RED}==> ERROR: could not find partition devices for ${loopdev}.${ENDCOLOR}" >&2
+  echo -e "${YELLOW}    On Linux install/start udev or run via ./create-image-docker.sh.${ENDCOLOR}" >&2
+  exit 1
+fi
 
 # Format with f2fs
 #mkfs.vfat -I -n SYSTEM ${bootdev}
@@ -105,6 +230,19 @@ rootdev=$(ls "${loopdev}"*2)
 # Format with ext4
 mkfs.vfat -I -n SYSTEM ${bootdev}
 mkfs.ext4 -F -L root -b 4096 -E stride=4,stripe_width=1024 ${rootdev}
+
+# macOS cannot mount ext4 natively and cannot run ARM/Linux binaries
+# (arch-chroot, pacman). The image is created, partitioned and formatted at
+# this point - stop with clear guidance instead of failing on `mount`.
+if [[ "${host_os}" == "darwin" ]]; then
+  echo -e "${YELLOW}==> Image created, partitioned and formatted: ${image}${ENDCOLOR}"
+  echo -e "${YELLOW}    macOS cannot mount ext4 or run the ARM/Linux chroot steps.${ENDCOLOR}"
+  echo -e "${YELLOW}    For a complete image build on macOS use:${ENDCOLOR}"
+  extra=""
+  [[ ${#script_sources[@]} -gt 0 ]] && extra=" ${script_sources[*]}"
+  echo -e "${GREEN}      ./create-image-docker.sh ${size} ${arch}${extra}${ENDCOLOR}"
+  exit 0
+fi
 
 echo -e "${YELLOW}==> Mounting image...${ENDCOLOR}"
 [ ! -d "${mount}" ] && mkdir "${mount}"
@@ -117,6 +255,15 @@ echo -e "${BOLDRED}==> Installing Arch Linux ARM root tree to image...${ENDCOLOR
 
 echo -e "${BOLDRED}==> Installing overlay tree to image...${ENDCOLOR}"
   rsync -rlDvP "$(dirname $0)/overlay/" "${mount}/"
+
+# When building inside a container (create-image-docker.sh), pacman 6.1+
+# fails to sandbox itself via Landlock inside the nested PID namespace of
+# arch-chroot (unshare). Disable the sandbox for the chroot build; native
+# Linux hosts keep the default behaviour.
+if [[ "${BUILD_IN_CONTAINER:-0}" == "1" ]]; then
+  echo -e "${YELLOW}==> Disabling pacman Landlock sandbox (container build)...${ENDCOLOR}"
+  sed -i 's/^\[options\]/[options]\nDisableSandbox/' "${mount}/etc/pacman.conf"
+fi
 
 echo -e "${BOLDRED}==> Setting up pacman keyring...${ENDCOLOR}"
 
@@ -159,11 +306,18 @@ echo -e "${BOLDRED}==> Setting up service for expanding fs on first boot...  ${E
 EOF
   
 echo -e "${BOLDRED}==> Setting up the alarm user...  ${ENDCOLOR}"
-  groupadd -g 999 sudo && useradd -u 999 -g alarm -G sudo -m -s /bin/bash alarm && \
-  sed -i /etc/sudoers -re 's/^%sudo.*/%sudo ALL=(ALL:ALL) NOPASSWD: ALL/g' && \
-  sed -i /etc/sudoers -re 's/^root.*/root ALL=(ALL:ALL) NOPASSWD: ALL/g' && \
-  sed -i /etc/sudoers -re 's/^#includedir.*/## **Removed the include directive** ##"/g' && \
-  echo "alarm ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
+  # NOTE: these commands must run INSIDE the chroot, otherwise they would
+  # modify the build host instead of the image. Idempotent: the Arch Linux
+  # ARM base already ships the alarm user and a passwordless sudo entry,
+  # so failures of groupadd/useradd are expected and harmless.
+  cat <<EOF | arch-chroot "${mount}"
+  groupadd -g 999 sudo 2>/dev/null || true
+  id alarm >/dev/null 2>&1 || useradd -u 999 -g alarm -G sudo -m -s /bin/bash alarm
+  sed -i /etc/sudoers -re 's/^%sudo.*/%sudo ALL=(ALL:ALL) NOPASSWD: ALL/g'
+  sed -i /etc/sudoers -re 's/^root.*/root ALL=(ALL:ALL) NOPASSWD: ALL/g'
+  sed -i /etc/sudoers -re 's/^#includedir.*/## **Removed the include directive** ##"/g'
+  echo "alarm ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+EOF
 echo -e "${BOLDRED}==> Customized the sudoers file for passwordless access to the alarm user! ${ENDCOLOR}"
 
 # Run setup scripts inside new root
