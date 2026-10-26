@@ -1,0 +1,36 @@
+#!/bin/bash
+# Self-check for the pacman retry patch in create-image.sh.
+# Verifies: the XferCommand sed injection hits the [options] section,
+# exactly once, idempotent (fails if the logic ever breaks).
+
+set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+cat > "$tmp/pacman.conf" <<'EOF'
+#
+# /etc/pacman.conf
+#
+[options]
+HoldPkg     = pacman glibc
+#XferCommand = /usr/bin/curl -L -C - -f -o %o %u
+Architecture = armv7h
+
+[core]
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+EOF
+
+# Same command as create-image.sh (XferCommand injection after [options])
+grep -q '^XferCommand' "$tmp/pacman.conf" ||
+  sed -i '/^\[options\]/a XferCommand = /usr/bin/curl -L -C - --fail --connect-timeout 10 --retry 4 --retry-delay 5 -o %o %u' "$tmp/pacman.conf"
+
+count="$(grep -c '^XferCommand' "$tmp/pacman.conf")"
+[[ "$count" == "1" ]] || { echo "FAIL: expected 1 XferCommand line, got $count"; exit 1; }
+
+# Must end up inside [options], above [core]
+options_block="$(sed -n '/^\[options\]/,/^\[core\]/p' "$tmp/pacman.conf")"
+echo "$options_block" | grep -q 'XferCommand = /usr/bin/curl' || { echo "FAIL: XferCommand not in [options] block"; exit 1; }
+
+# Idempotent on re-run (second run of create-image.sh after a crash)
+grep -q '^XferCommand' "$tmp/pacman.conf" || echo "FAIL: idempotency guard broken"
+echo "PASS: XferCommand injected once into [options] and idempotent"

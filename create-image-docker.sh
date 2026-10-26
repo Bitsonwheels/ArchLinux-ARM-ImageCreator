@@ -3,12 +3,12 @@
 # create-image-docker.sh - build an Arch Linux ARM image on macOS (or any
 # host with Docker) inside a privileged Arch Linux container.
 #
-# Why: ./create-image needs Linux facilities that macOS does not provide
+# Why: ./create-image.sh needs Linux facilities that macOS does not provide
 # (losetup, ext4 mounts, arch-chroot of ARM/Linux binaries). Running the
 # exact same script inside an Arch Linux container gives macOS users a fully
 # working build without changing the pipeline itself.
 #
-# Usage: identical to ./create-image:
+# Usage: identical to ./create-image.sh:
 #   ./create-image-docker.sh <size> <arch> [setup scripts...]
 #
 # Examples:
@@ -18,6 +18,14 @@
 # Options:
 #   --rebuild   Force rebuilding the builder image
 #   -h, --help  Show this help
+
+# set text color constants (same scheme as create-image.sh:
+# info=magenta, warning=yellow, error=red, success=green)
+RED="\e[91m"
+GREEN="\e[92m"
+MAGENTA="\e[95m"
+YELLOW="\e[93m"
+ENDCOLOR="\e[0m"
 
 set -euo pipefail
 
@@ -62,25 +70,25 @@ if [[ $# -lt 2 ]]; then
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "Error: 'docker' not found. Install Docker Desktop:" >&2
+  echo -e "${RED}Error: 'docker' not found. Install Docker Desktop:${ENDCOLOR}" >&2
   echo "  https://www.docker.com/products/docker-desktop/" >&2
   exit 1
 fi
 
 if ! docker info >/dev/null 2>&1; then
-  echo "Error: Docker engine is not running. Start Docker Desktop and try again." >&2
+  echo -e "${RED}Error: Docker engine is not running. Start Docker Desktop and try again.${ENDCOLOR}" >&2
   exit 1
 fi
 
 # 1) Register QEMU user-mode emulation (binfmt_misc) on the Docker VM.
 #    This is what lets the ARM binaries inside the chroot (pacman-key,
 #    pacman -Syu, systemctl, ...) run on an x86_64/arm64 Mac.
-echo "==> Registering QEMU binfmt for ARM emulation..."
+echo -e "${MAGENTA}==> Registering QEMU binfmt for ARM emulation...${ENDCOLOR}"
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
 # 2) Build (or reuse) the builder image.
 if [[ "${REBUILD}" == "1" ]] || ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
-  echo "==> Building builder image ${IMAGE_NAME}..."
+  echo -e "${MAGENTA}==> Building builder image ${IMAGE_NAME}...${ENDCOLOR}"
   docker build -t "${IMAGE_NAME}" "${DOCKERFILE_DIR}"
 fi
 
@@ -99,11 +107,11 @@ CONTAINER_NAME="arch-image-build"
 
 # Remove a leftover container from an earlier run whose wrapper was killed.
 if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
-  echo "==> Removing leftover container ${CONTAINER_NAME}..."
+  echo -e "${YELLOW}==> Removing leftover container ${CONTAINER_NAME}...${ENDCOLOR}"
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 fi
 
-echo "==> Creating build container ${CONTAINER_NAME}..."
+echo -e "${MAGENTA}==> Creating build container ${CONTAINER_NAME}...${ENDCOLOR}"
 docker create \
   --name "${CONTAINER_NAME}" \
   --privileged \
@@ -120,10 +128,10 @@ docker create \
         [ -e "/dev/loop${i}" ] || mknod "/dev/loop${i}" b 7 "${i}" 2>/dev/null || true
       done
     fi
-    exec ./create-image "$@"
+    exec ./create-image.sh "$@"
   ' _ "$@"
 
-echo "==> Starting build in Arch Linux container (${CONTAINER_NAME})."
+echo -e "${MAGENTA}==> Starting build in Arch Linux container (${CONTAINER_NAME}).${ENDCOLOR}"
 echo "    The container runs detached; it survives this wrapper being killed."
 docker start "${CONTAINER_NAME}" >/dev/null
 
@@ -137,4 +145,9 @@ rc="$(docker wait "${CONTAINER_NAME}")"
 rc="${rc:-1}"
 set -e
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+if [[ "${rc}" == "0" ]]; then
+  echo -e "${GREEN} ==> Build finished successfully - image is in the project directory. ${ENDCOLOR}"
+else
+  echo -e "${RED} ==> Build failed with exit code ${rc}. Check the log output above.${ENDCOLOR}"
+fi
 exit "${rc}"

@@ -13,14 +13,14 @@ These scripts are based on the fantastic work by [andrewboring](https://github.c
 ## Requirements
 
 - Linux (full build) - or macOS with Docker (see below)
-- `bash`, root privileges (or `sudo ./create-image ...`)
-- Tools on Linux: `losetup`, `parted`, `mkfs.vfat` (dosfstools), `mkfs.ext4` (e2fsprogs), `curl`, `tar`, `rsync`, `arch-install-scripts` (for `arch-chroot`)
+- `bash`, root privileges (or `sudo ./create-image.sh ...`)
+- Tools on Linux: `losetup`, `parted`, `mkfs.vfat` (dosfstools), `mkfs.ext4` (e2fsprogs), `curl`, `tar`, `rsync` - `arch-chroot` is bundled with the repo, no need for the `arch-install-scripts` package
 - On macOS/Homebrew: `parted dosfstools e2fsprogs` (partial native build) or Docker (full build)
 
 ## Usage
 
 ```
-./create-image <size> <arch> [setup scripts...]
+./create-image.sh <size> <arch> [setup scripts...]
 ```
 
 | Argument | Example | Meaning |
@@ -29,11 +29,27 @@ These scripts are based on the fantastic work by [andrewboring](https://github.c
 | `<arch>` | `armv7`, `rpi-armv7`, `rpi-aarch64`, `aarch64` | Arch Linux ARM tarball / image flavor |
 | `[setup scripts...]` | `setup/rpi-armv7 setup/avahi` | Optional scripts run inside the image (chroot) |
 
+### Available architectures (`<arch>`)
+
+`<arch>` selects the tarball `ArchLinuxARM-<arch>-latest.tar.gz` from
+[archlinuxarm.org](https://archlinuxarm.org/about/downloads). Anything
+listed there works. Common values:
+
+| `<arch>` | Platform |
+| --- | --- |
+| `rpi` | Raspberry Pi 1 / Zero (ARMv6) |
+| `rpi-2` | Raspberry Pi 2 (32-bit ARMv7) |
+| `rpi-3` | Raspberry Pi 3 (aarch64 kernel) |
+| `rpi-4` | Raspberry Pi 4 (aarch64 kernel) |
+| `rpi-armv7` | Raspberry Pi 2/3/4 (32-bit ARMv7 userland) - used in this project's CI |
+| `rpi-aarch64` | Raspberry Pi 3/4 (64-bit kernel + userland) - used in this project's CI |
+| `aarch64` | Generic 64-bit ARM platform - used in this project's CI |
+
 Examples:
 
 ```sh
-sudo ./create-image 8G rpi-armv7
-sudo ./create-image 8G rpi-aarch64 setup/rpi-aarch64 setup/avahi
+sudo ./create-image.sh 8G rpi-armv7
+sudo ./create-image.sh 8G rpi-aarch64 setup/rpi-aarch64 setup/avahi
 ```
 
 Notes:
@@ -46,7 +62,7 @@ Notes:
 
 ## Building on macOS
 
-`create-image` relies on Linux facilities that macOS does not provide
+`create-image.sh` relies on Linux facilities that macOS does not provide
 (`losetup`, ext4 mounts, and running ARM/Linux binaries via `arch-chroot`).
 Two things make macOS builds work:
 
@@ -59,7 +75,7 @@ Arch Linux container with QEMU ARM emulation:
 ./create-image-docker.sh 8G rpi-armv7 setup/rpi-armv7
 ```
 
-It accepts the same arguments as `./create-image`. Requirements:
+It accepts the same arguments as `./create-image.sh`. Requirements:
 
 - Docker (Desktop, Colima, OrbStack, ...) running - the first run pulls
   `archlinux` and `multiarch/qemu-user-static` and builds a small builder
@@ -81,12 +97,12 @@ docker stop arch-image-build && docker rm arch-image-build
 
 ### 2. Native partial build (macOS, not recommended)
 
-`create-image` detects the host OS. On macOS it can create, partition and
+`create-image.sh` detects the host OS. On macOS it can create, partition and
 format the image using Homebrew tools
 
 ```sh
 brew install parted dosfstools e2fsprogs
-./create-image 8G rpi-armv7
+./create-image.sh 8G rpi-armv7
 ```
 
 but stops before the ext4 mount / chroot steps, which macOS cannot perform.
@@ -99,7 +115,8 @@ Use the Docker wrapper for complete images.
 | `losetup: command not found` (macOS) | macOS has no `losetup`. Use `./create-image-docker.sh` or the native partial path (hdiutil-based). |
 | `error: Partition / too full` / `not enough free disk space` | Image too small. Use `8G` or larger. |
 | `error: restricting filesystem access failed because Landlock is not supported` | pacman sandbox inside containers. `create-image-docker.sh` disables it automatically (`BUILD_IN_CONTAINER=1`). |
-| `failed to commit transaction (download library error)` | Transient mirror/network failure during `pacman -Syu`. Just re-run the build; downloads restart and the tarball is cached. |
+| `chroot: failed to run command '/bin/bash': Exec format error` | ARM binaries cannot run natively on an x86_64 host. Register QEMU emulation: `docker run --rm --privileged multiarch/qemu-user-static --reset -p yes`, or install `qemu-user-static` and `systemctl restart systemd-binfmt`, or build via `./create-image-docker.sh`. The script checks this early and tells you. |
+| `failed to commit transaction (download library error)` / `failed retrieving file ... Connection timed out` | Transient mirror/network failure during `pacman -Syu`. The build now retried up to 3 times (plus curl-level retries per package); if it still fails, just re-run the build - downloads resume and the tarball is cached. |
 | `Error: Docker engine is not running` | Start Docker Desktop / `colima start`, then retry. |
 
 ## How it works
@@ -113,3 +130,34 @@ Use the Docker wrapper for complete images.
    pick the fastest mirror, install packages, configure locale, enable the
    `expand-rootfs` service, create the `alarm` user and run any setup
    scripts, then clean the pacman cache.
+
+## Changelog
+
+### 2026-10-26
+
+- **Renamed** `create-image` to `create-image.sh`; all callers (CI workflow,
+  Docker wrapper, docs) updated.
+- **Colored output** with a consistent scheme in `create-image.sh` and
+  `create-image-docker.sh`: info = magenta, warning = yellow, error = red,
+  success = green. The banner/header now prints before the early macOS
+  tool check, so it shows on every run.
+- **Header comment** for `create-image.sh` describing purpose, usage and the
+  macOS/Docker split.
+- **Robust package installer**: mirror download timeouts no longer kill the
+  build. Every pacman download gets curl-level retries (`XferCommand` with
+  `--retry 4 --retry-delay 5`, resumable), and the whole `pacman -Syu`
+  transaction is retried up to 3 times before failing with a clear hint to
+  re-run (downloads resume, nothing is lost).
+- **Fail-early checks** before any download starts:
+  - missing native tools on Linux (`losetup`, `parted`, `mkfs.vfat`,
+    `mkfs.ext4`, `curl`, `tar`, `rsync`) with distro-specific install hints
+  - missing QEMU user-mode emulation (`binfmt_misc`) on x86_64 hosts,
+    which previously surfaced as the cryptic
+    `chroot: failed to run command '/bin/bash': Exec format error`
+    mid-build
+- **Bundled `arch-chroot` is now used** from the repo (script directory on
+  `PATH`); the host package `arch-install-scripts` is no longer required.
+  The `sudo arch-chroot` call was dropped (`sudo` resets `PATH` and would
+  not find the bundled script).
+- **README**: available architectures table (usage `<arch>` values),
+  troubleshooting entries for the `Exec format error` and mirror timeouts.

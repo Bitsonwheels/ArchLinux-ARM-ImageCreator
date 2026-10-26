@@ -1,17 +1,38 @@
 #!/bin/bash
+#
+# create-image.sh - create a bootable Arch Linux ARM image.
+#
+# Downloads the Arch Linux ARM rootfs tarball for the requested architecture,
+# creates a sparse image file and partitions it (FAT32 boot + ext4 root),
+# then installs the rootfs, the project overlay and any optional setup
+# scripts into the image and configures the system via arch-chroot.
+#
+# Usage:
+#   ./create-image.sh <size> <arch> [setup scripts...]
+#
+# Examples:
+#   sudo ./create-image.sh 8G rpi-armv7
+#   sudo ./create-image.sh 8G rpi-aarch64 setup/rpi-aarch64 setup/avahi
+#
+# Linux hosts run the full pipeline. macOS can only create, partition and
+# format the image (no loop mounts / ARM chroot there) - for a complete
+# build on macOS use ./create-image-docker.sh, which runs this very script
+# inside a privileged Arch Linux container.
 
-export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 export LANG=en_US.UTF-8
 export LC_CTYPE=en_US.UTF-8
+
+# The repo bundles its own arch-chroot (works without the host package
+# `arch-install-scripts`); the script directory goes first on the PATH so
+# every arch-chroot call below resolves to it.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="${script_dir}:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 
 # set text color constants
 RED="\e[91m"
 GREEN="\e[92m"
 YELLOW="\e[93m"
 MAGENTA="\e[95m"
-BOLDYELLOW="\e[1;${YELLOW}"
-BOLDGREEN="\e[1;${GREEN}"
-BOLDRED="\e[1;${RED}"
 REDBACKGROUND="\e[41m"
 GREENBACKGROUND="\e[42m"
 YELLOWBACKGROUND="\e[43m"
@@ -19,8 +40,17 @@ ENDCOLOR="\e[0m"
 
 # Set up script error handling see https://disconnected.systems/blog/another-bash-strict-mode for details
 set -uo pipefail
-trap 's=$?; echo "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
+trap 's=$?; echo -e "${RED}$0: Error on line $LINENO: $BASH_COMMAND${ENDCOLOR}" >&2; exit $s' ERR
 IFS=$'\n\t'
+
+# --- Header prints before any early-exit guidance so every run, also the
+# --- macOS partial path, starts with the logo --------------------------------
+echo -e "${REDBACKGROUND}▄▖____▌_▖_▘________▄▖▄▖▖__▖__▄▖___________▄▖______▗_____${ENDCOLOR}"
+echo -e "${REDBACKGROUND}▌▌▛▘▛▘▛▌▌_▌▛▌▌▌▚▘▄▖▌▌▙▘▛▖▞▌__▐_▛▛▌▀▌▛▌█▌__▌_▛▘█▌▀▌▜▘▛▌▛▘${ENDCOLOR}"
+echo -e "${REDBACKGROUND}▛▌▌_▙▖▌▌▙▖▌▌▌▙▌▞▖__▛▌▌▌▌▝_▌__▟▖▌▌▌█▌▙▌▙▖__▙▖▌_▙▖█▌▐▖▙▌▌_${ENDCOLOR}"
+echo -e "${REDBACKGROUND}____________________________________▄▌__________________${ENDCOLOR}"
+
+echo -e "${MAGENTA} ==> Creates an Arch Linux ARM image e.g. for installation to an SD card. ${ENDCOLOR}"
 
 # --- Host OS detection -----------------------------------------------------
 # The full build needs Linux facilities: loop devices (losetup), ext4 mounts
@@ -61,12 +91,50 @@ if [[ "${host_os}" == "darwin" ]]; then
   fi
 fi
 
-echo -e "${REDBACKGROUND}▄▖____▌_▖_▘________▄▖▄▖▖__▖__▄▖___________▄▖______▗_____${ENDCOLOR}"
-echo -e "${REDBACKGROUND}▌▌▛▘▛▘▛▌▌_▌▛▌▌▌▚▘▄▖▌▌▙▘▛▖▞▌__▐_▛▛▌▀▌▛▌█▌__▌_▛▘█▌▀▌▜▘▛▌▛▘${ENDCOLOR}"
-echo -e "${REDBACKGROUND}▛▌▌_▙▖▌▌▙▖▌▌▌▙▌▞▖__▛▌▌▌▌▝_▌__▟▖▌▌▌█▌▙▌▙▖__▙▖▌_▙▖█▌▐▖▙▌▌_${ENDCOLOR}"
-echo -e "${REDBACKGROUND}____________________________________▄▌__________________${ENDCOLOR}"
+# On Linux, fail EARLY with a clear message when tools of the full build
+# pipeline are missing. So far the script died at the first arch-chroot call
+# (pacman keyring), e.g. "line 289: arch-chroot: command not found", after
+# having spent minutes on image creation already. Note: arch-chroot itself
+# is bundled in this repo (see the PATH line above), so it is only flagged
+# missing when the script is not run from the project directory.
+if [[ "${host_os}" == "linux" ]]; then
+  missing=()
+  for tool in losetup parted mkfs.vfat mkfs.ext4 curl tar rsync arch-chroot; do
+    command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
+  done
+  if (( ${#missing[@]} )); then
+    echo -e "${RED}==> Missing tool(s) on Linux: ${missing[*]}${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    arch-chroot is bundled with this repo - run create-image.sh from the project directory.${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    Arch:    sudo pacman -S --needed parted dosfstools e2fsprogs rsync curl tar${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    Debian:  sudo apt install parted dosfstools e2fsprogs rsync curl tar${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    (Or build on any host with Docker via ./create-image-docker.sh.)${ENDCOLOR}" >&2
+    exit 1
+  fi
+fi
 
-echo -e "${MAGENTA} ==> Creates an Arch Linux ARM image e.g. for installation to an SD card. ${ENDCOLOR}"
+# Running the ARM/Linux binaries inside the chroot on an x86_64 host needs
+# QEMU user-mode emulation registered with the kernel (binfmt_misc).
+# Without it, the build dies at the FIRST chroot command with the cryptic
+# "chroot: failed to run command '/bin/bash': Exec format error" - so check
+# it here, before the tarball is downloaded and minutes are spent.
+if [[ "${host_os}" == "linux" ]]; then
+  binfmt_dir="/proc/sys/fs/binfmt_misc"
+  binfmt_registered="$(
+      find "${binfmt_dir}" -maxdepth 1 -name 'qemu-*' 2>/dev/null | head -1
+  )"
+  if [[ -z "${binfmt_registered}" ]] && [[ "$(uname -m)" != "aarch64" ]]; then
+    echo -e "${RED}==> ERROR: no QEMU user-mode emulation registered (binfmt_misc).${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    The ARM rootfs cannot run on this $(uname -m) machine without it.${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    Easiest (registers the emulation for this kernel):${ENDCOLOR}" >&2
+    echo -e "${GREEN}      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    Without Docker: install qemu-user-static and enable binfmt:${ENDCOLOR}" >&2
+    echo -e "${GREEN}      Arch:    sudo pacman -S qemu-user-static && sudo systemctl restart systemd-binfmt${ENDCOLOR}" >&2
+    echo -e "${GREEN}      Debian:  sudo apt install qemu-user-static binfmt-support && sudo systemctl restart systemd-binfmt${ENDCOLOR}" >&2
+    echo -e "${YELLOW}    Or use ./create-image-docker.sh - that wrapper registers QEMU itself.${ENDCOLOR}" >&2
+    exit 1
+  fi
+fi
+
 
 # Ensure we are root
 if [[ $EUID -ne 0 ]]; then
@@ -82,7 +150,7 @@ base_url="http://archlinuxarm.org/os"
 # For example, to create a 4 gig image called archlinux-rpi-armv7.img
 # that automatically runs ./setup1 and ./setup2 inside the new root, use:
 #
-#   ./create-image 4G rpi-armv7 ./setup1 ./setup2
+#   ./create-image.sh 4G rpi-armv7 ./setup1 ./setup2
 #
 
 if [ $# -lt 2 ]; then
@@ -166,7 +234,7 @@ download_tarball() {
 }
 download_tarball
 
-  echo -e "${BOLDRED}==> Creating image...${ENDCOLOR}"
+  echo -e "${MAGENTA}==> Creating image...${ENDCOLOR}"
 dd if=/dev/zero of="${image}" bs=1 seek="${size}" count=0
 loopdev=$(attach_loop "${image}")
 
@@ -250,10 +318,10 @@ mount "${rootdev}" "${mount}"
 [ ! -d "${mount}/boot" ] && mkdir "${mount}/boot"
 mount "${bootdev}" "${mount}/boot"
 
-echo -e "${BOLDRED}==> Installing Arch Linux ARM root tree to image...${ENDCOLOR}"
+echo -e "${MAGENTA}==> Installing Arch Linux ARM root tree to image...${ENDCOLOR}"
   tar -xpf "${file}" -C "${mount}" 2> >(grep -v "Ignoring unknown extended header keyword")
 
-echo -e "${BOLDRED}==> Installing overlay tree to image...${ENDCOLOR}"
+echo -e "${MAGENTA}==> Installing overlay tree to image...${ENDCOLOR}"
   rsync -rlDvP "$(dirname $0)/overlay/" "${mount}/"
 
 # When building inside a container (create-image-docker.sh), pacman 6.1+
@@ -265,31 +333,62 @@ if [[ "${BUILD_IN_CONTAINER:-0}" == "1" ]]; then
   sed -i 's/^\[options\]/[options]\nDisableSandbox/' "${mount}/etc/pacman.conf"
 fi
 
-echo -e "${BOLDRED}==> Setting up pacman keyring...${ENDCOLOR}"
+echo -e "${MAGENTA}==> Setting up pacman keyring...${ENDCOLOR}"
 
 cat <<EOF | arch-chroot "${mount}"
   pacman-key --init
   pacman-key --populate archlinuxarm
 EOF
 
-echo -e "${BOLDRED}==> Setting up setup scripts dir...  ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Setting up setup scripts dir...  ${ENDCOLOR}"
   mkdir "${mount}${script_destdir}"
 
-echo -e "${BOLDYELLOW}==> Run mirrorscript scripts inside new root...  ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Run mirrorscript scripts inside new root...  ${ENDCOLOR}"
   script_dest="${script_destdir}/$(basename $mirrorscript)"
   
-echo -e "${BOLDRED}==> Installing $mirrorscript to $script_dest in new root...  ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Installing $mirrorscript to $script_dest in new root...  ${ENDCOLOR}"
   install -Dm755 "$mirrorscript" "${mount}${script_dest}"
 
-echo -e "${BOLDYELLOW}==> Running $script_dest...  ${ENDCOLOR}"
-  sudo arch-chroot "${mount}" "${script_dest}"
+echo -e "${MAGENTA}==> Running $script_dest...  ${ENDCOLOR}"
+  # No sudo here: the script already runs as root (checked at the start)
+  # and `sudo` would reset PATH, so the bundled arch-chroot is not found.
+  arch-chroot "${mount}" "${script_dest}"
 
-echo -e "${BOLDRED}==> Setting up Tools and needed Apps...  ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Setting up Tools and needed Apps...  ${ENDCOLOR}"
 echo -e "${YELLOWBACKGROUND} ==> Coffee break!? That might take a while.  ${ENDCOLOR}"
 
-cat <<EOF | arch-chroot "${mount}" 
+# Mirror download failures ("failed retrieving file '...' from <mirror>:
+# Connection timed out") are transient, but they previously killed the whole
+# build. Two layers now absorb them:
+#   1. curl-level retries for every pacman download (XferCommand), so a
+#      flaky/timed-out mirror is retried instead of failing the transaction
+#   2. up to three retries of the whole `pacman -Syu` transaction
+# The XferCommand also keeps `-C -` so partial downloads are resumed on
+# re-runs instead of re-downloaded.
+echo -e "${MAGENTA}==> Enabling pacman download retries (mirror timeouts are transient)...${ENDCOLOR}"
+grep -q '^XferCommand' "${mount}/etc/pacman.conf" ||
+  sed -i '/^\[options\]/a XferCommand = /usr/bin/curl -L -C - --fail --connect-timeout 10 --retry 4 --retry-delay 5 -o %o %u' "${mount}/etc/pacman.conf"
+
+pacman_ok=0
+for attempt in 1 2 3; do
+  if (( attempt > 1 )); then
+    echo -e "${YELLOW}==> pacman -Syu failed on attempt $((attempt - 1)); retrying (${attempt}/3)...${ENDCOLOR}"
+    sleep 5
+  fi
+  if cat <<EOF | arch-chroot "${mount}"
   pacman -Syu --noconfirm --needed vim arch-install-scripts git sudo dpkg go python base-devel devtools unzip wget mc gcc cmake f2fs-tools lsb-release fakeroot python-setuptools python-pip python-pipx tk arch-install-scripts
 EOF
+  then
+    pacman_ok=1
+    break
+  fi
+done
+if (( ! pacman_ok )); then
+  echo -e "${RED}==> ERROR: pacman -Syu failed after 3 attempts (mirror timeouts?).${ENDCOLOR}" >&2
+  echo -e "${YELLOW}    This is a transient network/mirror problem - just re-run the build.          ${ENDCOLOR}" >&2
+  echo -e "${YELLOW}    Downloads resume where they left off; nothing is lost.                  ${ENDCOLOR}" >&2
+  exit 1
+fi
 
 echo -e "${YELLOWBACKGROUND}==> Configure system locale to en_US.UTF-8...  ${ENDCOLOR}"
 
@@ -300,12 +399,12 @@ echo -e "${YELLOWBACKGROUND}==> Configure system locale to en_US.UTF-8...  ${END
   arch-chroot "${mount}" echo 'LANG="en_US.UTF-8"' > /etc/environment
   arch-chroot "${mount}" echo 'LC_ALL=“en_US.UTF-8”' > /etc/environment
   
-echo -e "${BOLDRED}==> Setting up service for expanding fs on first boot...  ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Setting up service for expanding fs on first boot...  ${ENDCOLOR}"
   cat <<EOF | arch-chroot "${mount}"
   systemctl enable expand-rootfs
 EOF
   
-echo -e "${BOLDRED}==> Setting up the alarm user...  ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Setting up the alarm user...  ${ENDCOLOR}"
   # NOTE: these commands must run INSIDE the chroot, otherwise they would
   # modify the build host instead of the image. Idempotent: the Arch Linux
   # ARM base already ships the alarm user and a passwordless sudo entry,
@@ -318,23 +417,23 @@ echo -e "${BOLDRED}==> Setting up the alarm user...  ${ENDCOLOR}"
   sed -i /etc/sudoers -re 's/^#includedir.*/## **Removed the include directive** ##"/g'
   echo "alarm ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 EOF
-echo -e "${BOLDRED}==> Customized the sudoers file for passwordless access to the alarm user! ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Customized the sudoers file for passwordless access to the alarm user! ${ENDCOLOR}"
 
 # Run setup scripts inside new root
 for script in "${script_sources[@]}"; do
   script_dest="${script_destdir}/$(basename "$script")"
 
-echo -e "${BOLDRED}==> Installing $script to $script_dest in new root... ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Installing $script to $script_dest in new root... ${ENDCOLOR}"
   install -Dm755 "$script" "${mount}${script_dest}"
-echo -e "${BOLDRED}==> Installing resize2fs to $script_destdir2 in new root... ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Installing resize2fs to $script_destdir2 in new root... ${ENDCOLOR}"
   install -Dm755 "resize2fs_once" "${mount}${script_destdir2}"
-echo -e "${BOLDRED}==> Running $script_dest...${ENDCOLOR}"
+echo -e "${MAGENTA}==> Running $script_dest...${ENDCOLOR}"
   arch-chroot "${mount}" "${script_dest}"
-echo -e "${BOLDRED}==> Removing $script_dest from new root... ${ENDCOLOR}"
+echo -e "${MAGENTA}==> Removing $script_dest from new root... ${ENDCOLOR}"
   rm "${mount}${script_dest}"
 done
 
-echo -e "${BOLDRED}==> Cleaning pacman cache...${ENDCOLOR}"
+echo -e "${MAGENTA}==> Cleaning pacman cache...${ENDCOLOR}"
 cat <<EOF | arch-chroot "${mount}"
 yes | pacman -Scc
 

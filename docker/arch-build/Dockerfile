@@ -1,6 +1,6 @@
 # Builder image for ./create-image-docker.sh
 #
-# Provides a Linux environment with everything ./create-image needs:
+# Provides a Linux environment with everything ./create-image.sh needs:
 #   - loop devices + mount        (util-linux, requires --privileged)
 #   - partitioning                (parted)
 #   - filesystem tools            (dosfstools, e2fsprogs)
